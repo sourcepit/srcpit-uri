@@ -117,6 +117,20 @@ impl Char {
             _ => false,
         }
     }
+
+    pub fn is_digit(&self) -> bool {
+        match self {
+            Char::Ascii(byte) => is_digit(*byte),
+            _ => false,
+        }
+    }
+
+    pub fn is_hex(&self) -> bool {
+        match self {
+            Char::Ascii(byte) => is_hex(*byte),
+            _ => false,
+        }
+    }
 }
 
 impl Display for Char {

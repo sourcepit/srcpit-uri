@@ -13,8 +13,9 @@ use common_failures::prelude::*;
 use self::char_buf::Char;
 use self::char_buf::CharStream;
 use std::fmt::Write;
+use std::net::Ipv4Addr;
+use token_buf::TokenBuffer;
 use token_buf::TokenStream;
-use token_buf::*;
 
 //    URI           = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
 
@@ -41,6 +42,8 @@ use token_buf::*;
 //    host          = IP-literal / IPv4address / reg-name
 //    port          = *DIGIT
 
+//    reg-name      = *( unreserved / pct-encoded / sub-delims )
+
 //    IP-literal    = "[" ( IPv6address / IPvFuture  ) "]"
 
 //    IPvFuture     = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
@@ -55,29 +58,213 @@ use token_buf::*;
 //                  / [ *5( h16 ":" ) h16 ] "::"              h16
 //                  / [ *6( h16 ":" ) h16 ] "::"
 
-//    h16           = 1*4HEXDIG
 //    ls32          = ( h16 ":" h16 ) / IPv4address
-//    IPv4address   = dec-octet "." dec-octet "." dec-octet "." dec-octet
+enum Ls32 {
+    Ipv6Part(H16, H16),
+    Ipv4address(Ipv4address),
+}
 
-//    dec-octet     = DIGIT                 ; 0-9
-//                  / %x31-39 DIGIT         ; 10-99
-//                  / "1" 2DIGIT            ; 100-199
-//                  / "2" %x30-34 DIGIT     ; 200-249
-//                  / "25" %x30-35          ; 250-255
+#[derive(Clone, Debug, PartialEq)]
+struct H16(Char, Char, Char, Char);
 
-//    reg-name      = *( unreserved / pct-encoded / sub-delims )
+impl std::fmt::Display for H16 {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{}{}{}{}", &self.0, &self.1, &self.2, &self.3)
+    }
+}
+fn parse_h16<T>(tb: &mut TokenBuffer<Char, T>) -> Result<Option<H16>>
+where
+    T: TokenStream<Char>,
+{
+    let mut tokens: Vec<Char> = Vec::new();
+    for _ in 0..4 {
+        if let Some(token) = tb.pop()? {
+            if token.is_hex() {
+                tokens.push(token);
+                continue;
+            }
+            tb.push(token);
+        }
+        break;
+    }
 
-//    path          = path-abempty    ; begins with "/" or is empty
-//                  / path-absolute   ; begins with "/" but not "//"
-//                  / path-noscheme   ; begins with a non-colon segment
-//                  / path-rootless   ; begins with a segment
-//                  / path-empty      ; zero characters
+    match tokens.len() {
+        4 => Ok(Some(H16(
+            tokens.remove(0),
+            tokens.remove(0),
+            tokens.remove(0),
+            tokens.remove(0),
+        ))),
+        _ => {
+            tb.push_tokens(tokens);
+            Ok(None)
+        }
+    }
+}
 
-//    path-abempty  = *( "/" segment )
-//    path-absolute = "/" [ segment-nz *( "/" segment ) ]
-//    path-noscheme = segment-nz-nc *( "/" segment )
-//    path-rootless = segment-nz *( "/" segment )
-//    path-empty    = 0<pchar>
+#[derive(Clone, Debug, PartialEq)]
+struct Ipv4address(DecOctet, DecOctet, DecOctet, DecOctet);
+
+impl std::fmt::Display for Ipv4address {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{}.{}.{}.{}", &self.0, &self.1, &self.2, &self.3)
+    }
+}
+
+fn parse_ipv4_address<T>(tb: &mut TokenBuffer<Char, T>) -> Result<Option<Ipv4address>>
+where
+    T: TokenStream<Char>,
+{
+    let d1 = match parse_dec_octet(tb)? {
+        Some(dec_octet) => dec_octet,
+        None => return Ok(None),
+    };
+
+    let dot1 = match tb.pop()? {
+        Some(c) => {
+            if c.is(b'.') {
+                Some(c)
+            } else {
+                tb.push(c);
+                None
+            }
+        }
+        None => None,
+    };
+
+    let dot1 = match dot1 {
+        Some(c) => c,
+        None => {
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    let d2 = match parse_dec_octet(tb)? {
+        Some(dec_octet) => dec_octet,
+        None => {
+            tb.push(dot1);
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    let dot2 = match tb.pop()? {
+        Some(c) => {
+            if c.is(b'.') {
+                Some(c)
+            } else {
+                tb.push(c);
+                None
+            }
+        }
+        None => None,
+    };
+
+    let dot2 = match dot2 {
+        Some(c) => c,
+        None => {
+            tb.push_tokens(d2.0);
+            tb.push(dot1);
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    let d3 = match parse_dec_octet(tb)? {
+        Some(dec_octet) => dec_octet,
+        None => {
+            tb.push(dot2);
+            tb.push_tokens(d2.0);
+            tb.push(dot1);
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    let dot3 = match tb.pop()? {
+        Some(c) => {
+            if c.is(b'.') {
+                Some(c)
+            } else {
+                tb.push(c);
+                None
+            }
+        }
+        None => None,
+    };
+
+    let dot3 = match dot3 {
+        Some(c) => c,
+        None => {
+            tb.push_tokens(d3.0);
+            tb.push(dot2);
+            tb.push_tokens(d2.0);
+            tb.push(dot1);
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    let d4 = match parse_dec_octet(tb)? {
+        Some(dec_octet) => dec_octet,
+        None => {
+            tb.push(dot3);
+            tb.push_tokens(d3.0);
+            tb.push(dot2);
+            tb.push_tokens(d2.0);
+            tb.push(dot1);
+            tb.push_tokens(d1.0);
+            return Ok(None);
+        }
+    };
+
+    Ok(Some(Ipv4address(d1, d2, d3, d4)))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DecOctet(Vec<Char>);
+
+impl std::fmt::Display for DecOctet {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for c in &self.0 {
+            fmt.write_str(c.to_string().as_str())?;
+        }
+        Ok(())
+    }
+}
+
+fn parse_dec_octet<T>(tb: &mut TokenBuffer<Char, T>) -> Result<Option<DecOctet>>
+where
+    T: TokenStream<Char>,
+{
+    let mut tokens: Vec<Char> = Vec::new();
+    for _ in 0..3 {
+        if let Some(token) = tb.pop()? {
+            if token.is_digit() {
+                tokens.push(token);
+                continue;
+            }
+            tb.push(token);
+        }
+        break;
+    }
+
+    let dec_octet_str = tokens
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<String>>()
+        .join("");
+
+    match dec_octet_str.parse::<u8>() {
+        Ok(dec_octet) => Ok(Some(DecOctet(tokens))),
+        Err(e) => {
+            tb.push_tokens(tokens);
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Path {
     segments: Vec<Segment>,
@@ -99,6 +286,7 @@ impl std::fmt::Display for Path {
         Ok(())
     }
 }
+
 fn parse_path<T>(tb: &mut TokenBuffer<Char, T>) -> Result<Path>
 where
     T: TokenStream<Char>,
@@ -110,7 +298,7 @@ where
         path = path_rootless;
     } else {
         path = Path {
-            segments: Vec::new(),
+            segments: vec![Segment(Vec::new())],
             absolute: false,
         };
     }
@@ -156,7 +344,7 @@ where
                 });
             } else {
                 path = Some(Path {
-                    segments: Vec::new(),
+                    segments: vec![Segment(Vec::new())],
                     absolute: true,
                 });
             }
@@ -213,8 +401,8 @@ where
                     continue;
                 }
                 tb.push(token);
-                break;
             }
+            break;
         }
     }
     match segments.is_empty() {
@@ -244,7 +432,7 @@ where
         tb.push(token);
     } else {
         path = Some(Path {
-            segments: Vec::new(),
+            segments: vec![Segment(Vec::new())],
             absolute: false,
         });
     }
